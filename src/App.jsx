@@ -1,13 +1,17 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { processBuffer } from './lib/namEngine';
 import { applyCabinetOffline, buildCabinetNode } from './lib/cabinet';
+import { addToLibrary, listLibrary, removeFromLibrary, urlForItem } from './lib/library';
 import {
   DEFAULT_TONE_PARAMS,
   buildToneChain,
   updateToneChain,
   applyToneShapeOffline,
 } from './lib/toneShaper';
+import { buildReverbChain, updateReverbChain, applyReverbOffline } from './lib/reverb';
+import { makeSlot, toggleSlot, removeSlot, runChain } from './lib/chain';
 import ToneFinder from './ToneFinder';
+import Tone3000Lookup from './Tone3000Lookup';
 
 // Add an entry here for every .nam file you drop in public/models/.
 const MODELS = [
@@ -73,16 +77,24 @@ function audioBufferToWav(buffer) {
 export default function App() {
   const [file, setFile] = useState(null);
   const [audioBuffer, setAudioBuffer] = useState(null);
-  const [modelId, setModelId] = useState(MODELS[0]?.id ?? '');
+  // chainSlots[0] is always "the amp" (shown in the hero panel below, never
+  // removed). chainSlots.slice(1) are pedals stacked AFTER the amp - add,
+  // remove, reorder, bypass freely. Order in the array = signal order.
+  const [chainSlots, setChainSlots] = useState(() => [makeSlot(MODELS[0]?.id ?? '')]);
   const [cabId, setCabId] = useState(CABS[0]?.id ?? '');
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState(null);
   const [wetBuffer, setWetBuffer] = useState(null);
-  const [namBypassed, setNamBypassed] = useState(false);
+  const [bypassedCount, setBypassedCount] = useState(0);
   const [toneParams, setToneParams] = useState(DEFAULT_TONE_PARAMS);
+  const [reverbMix, setReverbMix] = useState(0);
   const [previewPlaying, setPreviewPlaying] = useState(false);
+  const [customModels, setCustomModels] = useState([]);
+  const [customCabs, setCustomCabs] = useState([]);
+  const [libraryError, setLibraryError] = useState(null);
   const audioCtxRef = useRef(null);
   const previewChainRef = useRef(null);
+  const previewReverbRef = useRef(null);
   const previewSourceRef = useRef(null);
 
   function getAudioCtx() {
@@ -90,6 +102,105 @@ export default function App() {
       audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
     }
     return audioCtxRef.current;
+  }
+
+  async function refreshLibrary() {
+    const [nams, irs] = await Promise.all([listLibrary('nam'), listLibrary('ir')]);
+    setCustomModels(nams.map((item) => ({ ...item, url: urlForItem(item) })));
+    setCustomCabs(irs.map((item) => ({ ...item, url: urlForItem(item) })));
+  }
+
+  useEffect(() => {
+    refreshLibrary();
+  }, []);
+
+  // Built-in bundled files + anything uploaded, combined into one list.
+  const allModels = [
+    ...MODELS,
+    ...customModels.map((m) => ({ id: m.id, label: `${m.label} (uploaded)`, url: m.url })),
+  ];
+  const allCabs = [
+    ...CABS,
+    ...customCabs.map((c) => ({ id: c.id, label: `${c.label} (uploaded)`, url: c.url })),
+  ];
+
+  function resolveItem(itemId) {
+    return allModels.find((m) => m.id === itemId) || null;
+  }
+
+  async function handleUploadModel(e) {
+    const f = e.target.files[0];
+    if (!f) return;
+    setLibraryError(null);
+    try {
+      await addToLibrary(f, 'nam', getAudioCtx());
+      await refreshLibrary();
+    } catch (err) {
+      setLibraryError(err.message);
+    }
+    e.target.value = '';
+  }
+
+  async function handleUploadCab(e) {
+    const f = e.target.files[0];
+    if (!f) return;
+    setLibraryError(null);
+    try {
+      const item = await addToLibrary(f, 'ir', getAudioCtx());
+      await refreshLibrary();
+      setCabId(item.id);
+    } catch (err) {
+      setLibraryError(err.message);
+    }
+    e.target.value = '';
+  }
+
+  async function handleRemoveModel(id) {
+    await removeFromLibrary(id);
+    await refreshLibrary();
+    setChainSlots((prev) => prev.map((s) => (s.itemId === id ? { ...s, itemId: MODELS[0]?.id ?? '' } : s)));
+  }
+
+  async function handleRemoveCab(id) {
+    await removeFromLibrary(id);
+    await refreshLibrary();
+    if (cabId === id) setCabId(CABS[0]?.id ?? '');
+  }
+
+  function handleAmpChange(itemId) {
+    setChainSlots((prev) => {
+      const next = [...prev];
+      next[0] = { ...next[0], itemId };
+      return next;
+    });
+  }
+
+  function handleAddPedal() {
+    setChainSlots((prev) => [...prev, makeSlot(allModels[0]?.id ?? '')]);
+  }
+
+  function handlePedalItemChange(slotId, itemId) {
+    setChainSlots((prev) => prev.map((s) => (s.id === slotId ? { ...s, itemId } : s)));
+  }
+
+  function handlePedalToggle(slotId) {
+    setChainSlots((prev) => toggleSlot(prev, slotId));
+  }
+
+  function handlePedalRemove(slotId) {
+    setChainSlots((prev) => removeSlot(prev, slotId));
+  }
+
+  function handlePedalMove(slotId, direction) {
+    setChainSlots((prev) => {
+      const index = prev.findIndex((s) => s.id === slotId);
+      if (index <= 0) return prev; // never touches slot 0 (the amp)
+      const target = index + direction;
+      if (target < 1 || target >= prev.length) return prev; // stays within the pedal range
+      const next = [...prev];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
   }
 
   async function handleFile(e) {
@@ -114,20 +225,15 @@ export default function App() {
     if (!audioBuffer) return;
     setStatus('processing');
     setError(null);
-    setNamBypassed(false);
+    setBypassedCount(0);
     try {
-      const model = MODELS.find((m) => m.id === modelId);
-      const cab = CABS.find((c) => c.id === cabId);
-      let namOut;
-      try {
-        namOut = await processBuffer(audioBuffer, model.url);
-      } catch (namErr) {
-        setNamBypassed(true);
-        namOut = audioBuffer;
-      }
-      const cabbed = cab ? await applyCabinetOffline(namOut, cab.url) : namOut;
+      const cab = allCabs.find((c) => c.id === cabId);
+      const { buffer: chained, bypassedCount: bypassed } = await runChain(audioBuffer, chainSlots, resolveItem);
+      setBypassedCount(bypassed);
+      const cabbed = cab ? await applyCabinetOffline(chained, cab.url) : chained;
       const shaped = await applyToneShapeOffline(cabbed, toneParams);
-      setWetBuffer(shaped);
+      const reverbed = await applyReverbOffline(shaped, { wetMix: reverbMix });
+      setWetBuffer(reverbed);
       setStatus('done');
     } catch (err) {
       setError(err.message);
@@ -140,11 +246,13 @@ export default function App() {
       try {
         previewSourceRef.current.stop();
       } catch {
+        // already stopped
       }
       previewSourceRef.current.disconnect();
       previewSourceRef.current = null;
     }
     previewChainRef.current = null;
+    previewReverbRef.current = null;
     setPreviewPlaying(false);
   }
 
@@ -154,8 +262,9 @@ export default function App() {
     const ctx = getAudioCtx();
     const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
-    const cab = CABS.find((c) => c.id === cabId);
+    const cab = allCabs.find((c) => c.id === cabId);
     const chain = buildToneChain(ctx, toneParams);
+    const reverbChain = buildReverbChain(ctx, { wetMix: reverbMix });
     if (cab) {
       const convolver = await buildCabinetNode(ctx, cab.url);
       source.connect(convolver);
@@ -163,11 +272,13 @@ export default function App() {
     } else {
       source.connect(chain.input);
     }
-    chain.output.connect(ctx.destination);
+    chain.output.connect(reverbChain.input);
+    reverbChain.output.connect(ctx.destination);
     source.onended = () => setPreviewPlaying(false);
     source.start(0);
     previewSourceRef.current = source;
     previewChainRef.current = chain;
+    previewReverbRef.current = reverbChain;
     setPreviewPlaying(true);
   }
 
@@ -176,6 +287,13 @@ export default function App() {
     setToneParams(next);
     if (previewChainRef.current) {
       updateToneChain(previewChainRef.current, next);
+    }
+  }
+
+  function handleReverbChange(value) {
+    setReverbMix(value);
+    if (previewReverbRef.current) {
+      updateReverbChain(previewReverbRef.current, { wetMix: value });
     }
   }
 
@@ -190,8 +308,9 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
-  const selectedModel = MODELS.find((m) => m.id === modelId);
-  const selectedCab = CABS.find((c) => c.id === cabId);
+  const ampItem = resolveItem(chainSlots[0]?.itemId);
+  const selectedCab = allCabs.find((c) => c.id === cabId);
+  const pedalSlots = chainSlots.slice(1);
 
   return (
     <div className="app-shell">
@@ -274,8 +393,8 @@ export default function App() {
               <div className="amp-grille">
                 <div className="amp-nameplate">
                   <small>NEURAL AMP MODEL</small>
-                  <strong>Mesa Triple Rectifier</strong>
-                  <span>CH3 MODERN · BOOSTED CAPTURE</span>
+                  <strong>{ampItem?.label?.split('—')[0]?.trim() || 'No capture loaded'}</strong>
+                  <span>TONE3000 NAM CAPTURE</span>
                 </div>
               </div>
               <div className="amp-controls">
@@ -293,12 +412,55 @@ export default function App() {
 
             <label className="field model-selector">
               <span>Loaded capture</span>
-              <select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-                {MODELS.map((m) => (
+              <select value={chainSlots[0]?.itemId ?? ''} onChange={(e) => handleAmpChange(e.target.value)}>
+                {allModels.map((m) => (
                   <option key={m.id} value={m.id}>{m.label}</option>
                 ))}
               </select>
             </label>
+
+            <div className="chain-panel">
+              <div className="section-kicker">PEDALS AFTER THE AMP</div>
+              {pedalSlots.length === 0 && (
+                <p className="meta">No pedals in the chain yet — add a delay, compressor, boost, etc.</p>
+              )}
+              {pedalSlots.map((slot, i) => (
+                <div className={`chain-slot${slot.enabled ? '' : ' disabled'}`} key={slot.id}>
+                  <select value={slot.itemId} onChange={(e) => handlePedalItemChange(slot.id, e.target.value)}>
+                    {allModels.map((m) => (
+                      <option key={m.id} value={m.id}>{m.label}</option>
+                    ))}
+                  </select>
+                  <div className="chain-slot-actions">
+                    <button className="chain-btn" onClick={() => handlePedalMove(slot.id, -1)} disabled={i === 0} aria-label="Move up">↑</button>
+                    <button className="chain-btn" onClick={() => handlePedalMove(slot.id, 1)} disabled={i === pedalSlots.length - 1} aria-label="Move down">↓</button>
+                    <button className="chain-btn" onClick={() => handlePedalToggle(slot.id)}>{slot.enabled ? 'On' : 'Bypassed'}</button>
+                    <button className="remove-btn" onClick={() => handlePedalRemove(slot.id)}>Remove</button>
+                  </div>
+                </div>
+              ))}
+              <button className="chain-btn" onClick={handleAddPedal}>+ Add pedal to chain</button>
+
+              <label className="upload upload-small" style={{ marginTop: 10 }}>
+                <input type="file" accept=".nam" onChange={handleUploadModel} />
+                + Upload your own .nam file (amp or pedal)
+              </label>
+              {customModels.length > 0 && (
+                <ul className="library-list">
+                  {customModels.map((m) => (
+                    <li key={m.id}>
+                      {m.label}
+                      <button className="remove-btn" onClick={() => handleRemoveModel(m.id)}>Remove</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {libraryError && <p className="error">{libraryError}</p>}
+              <p className="meta" style={{ marginTop: 8 }}>
+                Uploads are saved in this browser only. .nam uploads become selectable but won't process
+                audio until the amp engine is wired up.
+              </p>
+            </div>
           </section>
 
           <section className="cab-panel rack-frame">
@@ -316,7 +478,7 @@ export default function App() {
             <label className="field cab-selector">
               <span>Loaded IR</span>
               <select value={cabId} onChange={(e) => setCabId(e.target.value)}>
-                {CABS.map((c) => (
+                {allCabs.map((c) => (
                   <option key={c.id} value={c.id}>{c.label}</option>
                 ))}
               </select>
@@ -324,32 +486,55 @@ export default function App() {
             <div className="cab-spec">
               <span>Cab</span><strong>{selectedCab?.label || 'None'}</strong>
             </div>
+
+            <label className="upload upload-small" style={{ marginTop: 10 }}>
+              <input type="file" accept=".wav" onChange={handleUploadCab} />
+              + Upload your own cabinet/space IR (.wav)
+            </label>
+            {customCabs.length > 0 && (
+              <ul className="library-list">
+                {customCabs.map((c) => (
+                  <li key={c.id}>
+                    {c.label}
+                    <button className="remove-btn" onClick={() => handleRemoveCab(c.id)}>Remove</button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         </div>
 
         <section className="tone-shape rack-frame">
           <div className="section-title-row">
             <div>
-              <div className="section-kicker">POST EQ / LEVEL</div>
+              <div className="section-kicker">POST EQ / LEVEL / VERB</div>
               <h2>Tone Shaper</h2>
             </div>
-            <p>These controls shape the signal around the fixed NAM capture.</p>
+            <p>These controls shape the signal around the fixed NAM capture(s).</p>
           </div>
 
           <div className="knob-row">
             <ToneSlider label="Input" value={toneParams.inputGainDb} min={-12} max={12} onChange={(v) => handleToneChange('inputGainDb', v)} />
+            <ToneSlider label="Depth" value={toneParams.depthDb} min={-12} max={12} onChange={(v) => handleToneChange('depthDb', v)} />
             <ToneSlider label="Bass" value={toneParams.bassDb} min={-12} max={12} onChange={(v) => handleToneChange('bassDb', v)} />
             <ToneSlider label="Mid" value={toneParams.midDb} min={-12} max={12} onChange={(v) => handleToneChange('midDb', v)} />
             <ToneSlider label="Treble" value={toneParams.trebleDb} min={-12} max={12} onChange={(v) => handleToneChange('trebleDb', v)} />
+            <ToneSlider label="Presence" value={toneParams.presenceDb} min={-12} max={12} onChange={(v) => handleToneChange('presenceDb', v)} />
             <ToneSlider label="Output" value={toneParams.outputGainDb} min={-12} max={12} onChange={(v) => handleToneChange('outputGainDb', v)} />
+            <ToneSlider label="Reverb" value={Math.round(reverbMix * 100)} min={0} max={100} suffix="%" onChange={(v) => handleReverbChange(v / 100)} />
           </div>
+          <p className="meta" style={{ marginTop: 10 }}>
+            Reverb is synthetic/algorithmic, not a captured real spring tank or room.
+          </p>
         </section>
 
         <ToneFinder />
+        <Tone3000Lookup />
 
-        {namBypassed && (
+        {bypassedCount > 0 && (
           <div className="notice rack-frame">
-            Amp model is currently bypassed by the engine. This render is using the cabinet IR and tone-shaping stage only.
+            {bypassedCount} chain stage{bypassedCount > 1 ? 's are' : ' is'} currently bypassed by the engine
+            (not wired up yet). This render used the cabinet IR and tone-shaping stage only for those.
           </div>
         )}
         {error && <p className="error rack-frame">{error}</p>}
@@ -357,7 +542,7 @@ export default function App() {
         <section className="bottom-actions rack-frame">
           <div className="preset-readout">
             <small>ACTIVE RIG</small>
-            <strong>{selectedModel?.label || 'No model selected'}</strong>
+            <strong>{ampItem?.label || 'No model selected'}{pedalSlots.length > 0 ? ` +${pedalSlots.length}` : ''}</strong>
           </div>
           <button className="secondary-action" disabled={!audioBuffer} onClick={previewPlaying ? stopPreview : startPreview}>
             {previewPlaying ? 'STOP PREVIEW' : 'PREVIEW CHAIN'}
@@ -388,8 +573,9 @@ function KnobDisplay({ label, value, suffix = '' }) {
   );
 }
 
-function ToneSlider({ label, value, min, max, onChange }) {
+function ToneSlider({ label, value, min, max, onChange, suffix = ' dB' }) {
   const rotation = -135 + ((value - min) / (max - min)) * 270;
+  const step = suffix === '%' ? 1 : 0.5;
   return (
     <label className="tone-knob">
       <span className="tone-knob-label">{label}</span>
@@ -399,13 +585,13 @@ function ToneSlider({ label, value, min, max, onChange }) {
           type="range"
           min={min}
           max={max}
-          step="0.5"
+          step={step}
           value={value}
           onChange={(e) => onChange(parseFloat(e.target.value))}
           aria-label={label}
         />
       </span>
-      <strong>{value > 0 ? '+' : ''}{value} dB</strong>
+      <strong>{value > 0 && suffix !== '%' ? '+' : ''}{value}{suffix}</strong>
     </label>
   );
 }

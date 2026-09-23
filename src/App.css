@@ -741,7 +741,7 @@ select {
 
 .knob-row {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
   gap: 12px;
   margin-top: 18px;
   padding: 20px 16px;
@@ -1177,4 +1177,103 @@ button:disabled {
     grid-column: 1 / -1;
     grid-row: 1;
   }
+}
+
+/* ===== Added: local upload library, multi-slot pedal chain, Tone3000 lookup ===== */
+
+.upload-small {
+  display: block;
+  min-height: 40px;
+  padding: 9px 12px;
+  font-size: .68rem;
+  color: #9aa0a1;
+  border: 1px dashed #3a3e3f;
+  border-radius: 6px;
+  background: #0e1010;
+  text-align: center;
+}
+
+.library-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: grid;
+  gap: 6px;
+}
+
+.library-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid #2c3031;
+  border-radius: 6px;
+  background: #101212;
+  font-size: .72rem;
+  color: #c7cacb;
+}
+
+.chain-btn,
+.remove-btn {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: .65rem;
+  font-weight: 700;
+  letter-spacing: .03em;
+  border: 1px solid #434849;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #232626, #131515);
+  color: #d8dadb;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.remove-btn {
+  border-color: #5b2922;
+  color: #ff9d8f;
+  background: linear-gradient(180deg, #3a1a15, #1a0e0c);
+}
+
+.chain-panel {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #2b2f30;
+  display: grid;
+  gap: 8px;
+}
+
+.chain-slot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #2c3031;
+  border-radius: 6px;
+  background: #101212;
+}
+
+.chain-slot select {
+  flex: 1;
+  min-height: 36px;
+}
+
+.chain-slot.disabled {
+  opacity: .45;
+}
+
+.chain-slot-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.tone3000-lookup {
+  padding: 20px 22px;
+}
+
+.tone3000-lookup .subtitle {
+  color: #7d8283;
+  margin: 6px 0 14px;
+  font-size: .78rem;
 }
