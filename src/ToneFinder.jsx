@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { lookupTone } from './data/toneReferences';
+import { matchTonesFromAnalysis } from './data/toneMatches';
 import { analyzeAudioBuffer, describeTone } from './lib/toneAnalysis';
 
 function TagLinks({ tags }) {
@@ -58,7 +59,8 @@ export default function ToneFinder() {
       const decoded = await getAudioCtx().decodeAudioData(arrayBuf);
       const raw = analyzeAudioBuffer(decoded);
       const described = describeTone(raw);
-      setAnalysis({ raw, described });
+      const match = matchTonesFromAnalysis(raw);
+      setAnalysis({ raw, described, match });
       setStatus('done');
     } catch (err) {
       setError(`Couldn't analyze that file: ${err.message}`);
@@ -70,8 +72,8 @@ export default function ToneFinder() {
     <div className="panel tone-finder">
       <h2>Find a tone</h2>
       <p className="subtitle">
-        Describe a band or sound, or upload a reference track, and get a starting point for what to search
-        on TONE3000.
+        Describe a band or sound, or upload a reference track, and get real TONE3000 tones to try — plus
+        what to search for more options.
       </p>
 
       <div className="tabs">
@@ -153,6 +155,26 @@ export default function ToneFinder() {
                 <p>Crest factor: {analysis.raw.crestDb.toFixed(1)} dB</p>
               </details>
               {analysis.described.tags.length > 0 && <TagLinks tags={analysis.described.tags} />}
+
+              <div className="tone-match">
+                <p className="tone-match-label">
+                  Closest style to try: <strong>{analysis.match.label}</strong>
+                </p>
+                <p className="tone-match-blurb">{analysis.match.blurb}</p>
+                <p className="tone-match-caveat">
+                  These are style matches based on frequency/dynamics, not an identification of the exact
+                  gear used — that's not something this kind of analysis can determine.
+                </p>
+                <ul className="tone-match-links">
+                  {analysis.match.links.map((l) => (
+                    <li key={l.url}>
+                      <a href={l.url} target="_blank" rel="noreferrer">
+                        {l.label}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
           )}
         </div>
