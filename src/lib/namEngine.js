@@ -1,69 +1,106 @@
 // namEngine.js
 //
-// Wraps `neural-amp-modeler-wasm` for OFFLINE processing: decode a full
-// audio file, run it through a .nam model, return the wet buffer. No
-// real-time constraint here since this is a reamp/render tool, not a
-// live rig.
+// Wraps `neural-amp-modeler-wasm`'s NamEngine/NamNode classes for OFFLINE
+// processing: decode a full audio file, run it through a .nam model,
+// return the wet buffer. No real-time constraint here since this is a
+// reamp/render tool, not a live rig.
 //
-// STATUS: NOT YET WIRED UP. Here's why, so the next step is clear:
-// `neural-amp-modeler-wasm` (github.com/tone-3000/neural-amp-modeler-wasm)
-// ships React components (T3kPlayer, T3kPlayerContextProvider) built for
-// browsing/previewing tones live - that's a different job than "decode this
-// whole file, run it through the model, hand back a rendered buffer."
-// There's very likely a lower-level engine export for that (the repo's
-// wasm/ layer talks to NeuralAmpModelerCore directly), but I haven't
-// confirmed the exact function names/signatures - the npm listing doesn't
-// document them.
+// Confirmed API, read directly from
+// node_modules/neural-amp-modeler-wasm/dist/engine/NamEngine.d.ts:
+//   NamEngine.attach(context: BaseAudioContext): Promise<NamEngine>
+//     - one engine per AudioContext; fetches/registers the wasm module once
+//   engine.createNode(): Promise<NamNode>
+//     - cheap; every node shares the one wasm module the engine attached
+//   node.loadModel(json: string): Promise<NamModelInfo>
+//     - takes the raw .nam file's JSON text directly
+//   node extends AudioWorkletNode - mono in, mono out - connects into any
+//   Web Audio graph, including an OfflineAudioContext, exactly like any
+//   other node.
+//   node.dispose(): Promise<void>
 //
-// NEXT STEP: after `npm install`, check:
-//   - node_modules/neural-amp-modeler-wasm/README.md
-//   - node_modules/neural-amp-modeler-wasm/dist/ (exported symbols)
-//   - the repo's ui/src/engine/ source on GitHub
-// and swap the two TODOs below for the real calls. Everything else in this
-// app (upload, decode, UI, WAV export) works today and doesn't depend on
-// this file being finished.
+// UNTESTED IN A REAL BROWSER - written against the .d.ts contract above,
+// not run yet. If the render comes out silent, distorted in a way that
+// isn't the amp, or throws, paste the exact error/behavior back and we'll
+// adjust from what actually happens rather than the spec.
+//
+// KNOWN OPEN QUESTION: the .nam model here was captured at 48kHz. This
+// renders at whatever sample rate the INPUT file already is. If those
+// differ, the model's own math is rate-dependent, so the tone could come
+// out subtly off (not resampled, just run at a different rate than it was
+// trained for). Nothing in the type definitions says the engine handles
+// that internally. If the reamped tone sounds wrong in a way that isn't
+// "no processing happened," that mismatch is the first thing to check -
+// don't guess a fix for it without confirming the symptom first.
 
-let modulePromise = null;
+import { NamEngine } from 'neural-amp-modeler-wasm';
 
-function getModule() {
-  if (!modulePromise) {
-    modulePromise = import('neural-amp-modeler-wasm');
+const modelTextCache = new Map();
+
+async function fetchModelJson(modelUrl) {
+  if (modelTextCache.has(modelUrl)) return modelTextCache.get(modelUrl);
+  const res = await fetch(modelUrl);
+  if (!res.ok) {
+    throw new Error(`Couldn't fetch model file at ${modelUrl} (${res.status})`);
   }
-  return modulePromise;
+  const text = await res.text();
+  modelTextCache.set(modelUrl, text);
+  return text;
 }
 
 /**
- * Load a .nam model from a URL (e.g. "/models/tri-rec-ch3-modern.nam").
- * Returns whatever handle the engine needs to run inference with it.
+ * Load a .nam model's raw JSON text from a URL. Cached per URL so
+ * re-selecting the same model in the chain doesn't refetch it.
  */
 export async function loadModel(modelUrl) {
-  await getModule();
-  // TODO: replace with the package's real model-loading call, e.g.
-  //   const engine = await mod.createEngine();
-  //   await engine.loadModel(modelUrl);
-  //   return engine;
-  throw new Error(
-    `namEngine.loadModel() isn't wired up yet - see the STATUS comment ` +
-      `at the top of src/lib/namEngine.js. Tried to load: ${modelUrl}`
-  );
+  return fetchModelJson(modelUrl);
 }
 
 /**
- * Run a decoded AudioBuffer through the given model and return a new
- * AudioBuffer with the model applied. Mono in is fine; stereo in will be
- * processed per-channel.
+ * Run a decoded AudioBuffer through the given .nam model and return a new
+ * AudioBuffer with the model applied.
+ *
+ * One OfflineAudioContext per call (required - they're single-use and
+ * sized to this specific buffer). One NamEngine.attach() per call too,
+ * since the engine is tied to its context. For stereo input, each channel
+ * gets its own NamNode instance off the SAME engine (NamNode is mono
+ * in/mono out), split before and merged back after - not two separate
+ * engines, so the wasm module itself only loads once even for stereo.
  */
 export async function processBuffer(audioBuffer, modelUrl) {
-  const engine = await loadModel(modelUrl);
+  const modelJson = await fetchModelJson(modelUrl);
+  const { numberOfChannels, length, sampleRate } = audioBuffer;
 
-  // TODO: replace with the package's real per-channel processing call, e.g.
-  //   const ctx = new OfflineAudioContext(
-  //     audioBuffer.numberOfChannels,
-  //     audioBuffer.length,
-  //     audioBuffer.sampleRate
-  //   );
-  //   for each channel: engine.process(audioBuffer.getChannelData(c)) -> Float32Array
-  //   write results into a new AudioBuffer and return it.
+  const ctx = new OfflineAudioContext(numberOfChannels, length, sampleRate);
+  const engine = await NamEngine.attach(ctx);
 
-  throw new Error('namEngine.processBuffer() is not implemented yet.');
+  const source = ctx.createBufferSource();
+  source.buffer = audioBuffer;
+
+  const nodes = [];
+  try {
+    if (numberOfChannels === 1) {
+      const node = await engine.createNode();
+      await node.loadModel(modelJson);
+      nodes.push(node);
+      source.connect(node);
+      node.connect(ctx.destination);
+    } else {
+      const splitter = ctx.createChannelSplitter(numberOfChannels);
+      const merger = ctx.createChannelMerger(numberOfChannels);
+      source.connect(splitter);
+      for (let c = 0; c < numberOfChannels; c++) {
+        const node = await engine.createNode();
+        await node.loadModel(modelJson);
+        nodes.push(node);
+        splitter.connect(node, c);
+        node.connect(merger, 0, c);
+      }
+      merger.connect(ctx.destination);
+    }
+
+    source.start(0);
+    return await ctx.startRendering();
+  } finally {
+    await Promise.all(nodes.map((n) => n.dispose().catch(() => {})));
+  }
 }
