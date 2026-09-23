@@ -47,7 +47,7 @@ function audioBufferToWav(buffer) {
   writeString(8, 'WAVE');
   writeString(12, 'fmt ');
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
+  view.setUint16(20, 1, true);
   view.setUint16(22, numChannels, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * blockAlign, true);
@@ -75,7 +75,7 @@ export default function App() {
   const [audioBuffer, setAudioBuffer] = useState(null);
   const [modelId, setModelId] = useState(MODELS[0]?.id ?? '');
   const [cabId, setCabId] = useState(CABS[0]?.id ?? '');
-  const [status, setStatus] = useState('idle'); // idle | decoding | ready | processing | done
+  const [status, setStatus] = useState('idle');
   const [error, setError] = useState(null);
   const [wetBuffer, setWetBuffer] = useState(null);
   const [namBypassed, setNamBypassed] = useState(false);
@@ -122,9 +122,6 @@ export default function App() {
       try {
         namOut = await processBuffer(audioBuffer, model.url);
       } catch (namErr) {
-        // Amp model isn't wired up yet (see namEngine.js) - fall back to
-        // the dry signal so cab IR + tone-shaping are still usable today
-        // instead of hard-failing the whole export.
         setNamBypassed(true);
         namOut = audioBuffer;
       }
@@ -143,7 +140,6 @@ export default function App() {
       try {
         previewSourceRef.current.stop();
       } catch {
-        // already stopped
       }
       previewSourceRef.current.disconnect();
       previewSourceRef.current = null;
@@ -194,139 +190,222 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
+  const selectedModel = MODELS.find((m) => m.id === modelId);
+  const selectedCab = CABS.find((c) => c.id === cabId);
+
   return (
-    <div className="app">
-      <h1>Amp Cab Modeler</h1>
-      <p className="subtitle">
-        Upload a dry guitar track, run it through a NAM amp model, download the wet render.
-      </p>
+    <div className="app-shell">
+      <header className="topbar rack-frame">
+        <div className="brand-lockup">
+          <div className="brand-mark" aria-hidden="true"><span /></div>
+          <div>
+            <h1>AmpCab Modeler</h1>
+            <p>REAMP · TONE MATCH · RECORD</p>
+          </div>
+        </div>
+        <div className="engine-pill">
+          <span className="status-led" />
+          <div>
+            <strong>{status === 'processing' ? 'Processing' : 'Engine Ready'}</strong>
+            <small>NAM + cabinet workflow</small>
+          </div>
+        </div>
+      </header>
 
-      <div className="panel">
-        <label className="upload">
-          <input type="file" accept="audio/*" onChange={handleFile} />
-          {file ? file.name : 'Choose a WAV/audio file'}
-        </label>
+      <main className="studio-rack">
+        <section className="track-panel rack-frame">
+          <div className="section-kicker">GUITAR TRACK · DI</div>
+          <div className="track-grid">
+            <label className="upload upload-compact">
+              <input type="file" accept="audio/*" onChange={handleFile} />
+              <span className="file-icon">▣</span>
+              <span>
+                <strong>{file ? file.name : 'Choose a WAV / audio file'}</strong>
+                <small>{file ? 'Tap to replace track' : 'Dry guitar input'}</small>
+              </span>
+            </label>
 
-        {audioBuffer && (
-          <p className="meta">
-            {audioBuffer.numberOfChannels}ch · {audioBuffer.sampleRate}Hz ·{' '}
-            {audioBuffer.duration.toFixed(1)}s
-          </p>
-        )}
+            <div className="waveform" aria-hidden="true">
+              <div className="wave-bars">
+                {Array.from({ length: 72 }).map((_, i) => (
+                  <i key={i} style={{ '--h': `${18 + ((i * 17) % 64)}%` }} />
+                ))}
+              </div>
+              <div className="wave-playhead" />
+              <span className="wave-label">{audioBuffer ? `${audioBuffer.duration.toFixed(1)}s` : 'NO TRACK'}</span>
+            </div>
 
-        <label className="field">
-          Model
-          <select value={modelId} onChange={(e) => setModelId(e.target.value)}>
-            {MODELS.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
+            <button
+              className="transport-button"
+              disabled={!audioBuffer}
+              onClick={previewPlaying ? stopPreview : startPreview}
+              aria-label={previewPlaying ? 'Stop preview' : 'Start preview'}
+            >
+              {previewPlaying ? '■' : '▶'}
+            </button>
+          </div>
+          {audioBuffer && (
+            <p className="track-meta">
+              {audioBuffer.numberOfChannels}ch · {audioBuffer.sampleRate} Hz · {audioBuffer.duration.toFixed(1)} sec
+            </p>
+          )}
+        </section>
+
+        <section className="signal-panel rack-frame">
+          <div className="section-kicker">SIGNAL CHAIN</div>
+          <div className="signal-chain">
+            {['DI', 'BOOST', 'AMP', 'CAB', 'EQ', 'OUTPUT'].map((item, index) => (
+              <div className="signal-step" key={item}>
+                <span className={`chain-led chain-led-${index}`} />
+                <strong>{item}</strong>
+                {index < 5 && <b>›</b>}
+              </div>
             ))}
-          </select>
-        </label>
+          </div>
+        </section>
 
-        <label className="field">
-          Cabinet IR
-          <select value={cabId} onChange={(e) => setCabId(e.target.value)}>
-            {CABS.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="gear-grid">
+          <section className="amp-panel rack-frame">
+            <div className="amp-topline">
+              <span>AMP · HIGH-GAIN MODERN</span>
+              <span className="target-badge">BAD OMENS TARGET</span>
+            </div>
+            <div className="amp-face">
+              <div className="amp-grille">
+                <div className="amp-nameplate">
+                  <small>NEURAL AMP MODEL</small>
+                  <strong>Mesa Triple Rectifier</strong>
+                  <span>CH3 MODERN · BOOSTED CAPTURE</span>
+                </div>
+              </div>
+              <div className="amp-controls">
+                <div className="power-switch"><span />ON</div>
+                <KnobDisplay label="INPUT" value={toneParams.inputGainDb} suffix=" dB" />
+                <KnobDisplay label="BASS" value={toneParams.bassDb} suffix=" dB" />
+                <KnobDisplay label="MID" value={toneParams.midDb} suffix=" dB" />
+                <KnobDisplay label="TREBLE" value={toneParams.trebleDb} suffix=" dB" />
+                <KnobDisplay label="OUTPUT" value={toneParams.outputGainDb} suffix=" dB" />
+                <div className="amp-vents" aria-hidden="true">
+                  {Array.from({ length: 7 }).map((_, i) => <i key={i} />)}
+                </div>
+              </div>
+            </div>
 
-        <div className="actions">
-          <button disabled={!audioBuffer || status === 'processing'} onClick={handleProcess}>
-            {status === 'processing' ? 'Processing…' : 'Process'}
-          </button>
-          <button disabled={!wetBuffer} onClick={handleDownload}>
-            Download WAV
-          </button>
+            <label className="field model-selector">
+              <span>Loaded capture</span>
+              <select value={modelId} onChange={(e) => setModelId(e.target.value)}>
+                {MODELS.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+            </label>
+          </section>
+
+          <section className="cab-panel rack-frame">
+            <div className="section-kicker">CABINET</div>
+            <div className="cab-visual">
+              <div className="cab-nameplate">MESA OVERSIZED 4×12</div>
+              <div className="speaker-grid">
+                <span /><span /><span /><span />
+              </div>
+              <div className="mic-pair">
+                <div><i className="mic mic-57" /><strong>SM57</strong><small>ON AXIS</small></div>
+                <div><i className="mic mic-160" /><strong>M160</strong><small>BLEND</small></div>
+              </div>
+            </div>
+            <label className="field cab-selector">
+              <span>Loaded IR</span>
+              <select value={cabId} onChange={(e) => setCabId(e.target.value)}>
+                {CABS.map((c) => (
+                  <option key={c.id} value={c.id}>{c.label}</option>
+                ))}
+              </select>
+            </label>
+            <div className="cab-spec">
+              <span>Cab</span><strong>{selectedCab?.label || 'None'}</strong>
+            </div>
+          </section>
         </div>
 
+        <section className="tone-shape rack-frame">
+          <div className="section-title-row">
+            <div>
+              <div className="section-kicker">POST EQ / LEVEL</div>
+              <h2>Tone Shaper</h2>
+            </div>
+            <p>These controls shape the signal around the fixed NAM capture.</p>
+          </div>
+
+          <div className="knob-row">
+            <ToneSlider label="Input" value={toneParams.inputGainDb} min={-12} max={12} onChange={(v) => handleToneChange('inputGainDb', v)} />
+            <ToneSlider label="Bass" value={toneParams.bassDb} min={-12} max={12} onChange={(v) => handleToneChange('bassDb', v)} />
+            <ToneSlider label="Mid" value={toneParams.midDb} min={-12} max={12} onChange={(v) => handleToneChange('midDb', v)} />
+            <ToneSlider label="Treble" value={toneParams.trebleDb} min={-12} max={12} onChange={(v) => handleToneChange('trebleDb', v)} />
+            <ToneSlider label="Output" value={toneParams.outputGainDb} min={-12} max={12} onChange={(v) => handleToneChange('outputGainDb', v)} />
+          </div>
+        </section>
+
+        <ToneFinder />
+
         {namBypassed && (
-          <p className="notice">
-            Amp model isn't wired up yet — this export is your dry track through the cabinet IR and
-            tone-shaping EQ below, amp model skipped.
-          </p>
+          <div className="notice rack-frame">
+            Amp model is currently bypassed by the engine. This render is using the cabinet IR and tone-shaping stage only.
+          </div>
         )}
+        {error && <p className="error rack-frame">{error}</p>}
 
-        {error && <p className="error">{error}</p>}
+        <section className="bottom-actions rack-frame">
+          <div className="preset-readout">
+            <small>ACTIVE RIG</small>
+            <strong>{selectedModel?.label || 'No model selected'}</strong>
+          </div>
+          <button className="secondary-action" disabled={!audioBuffer} onClick={previewPlaying ? stopPreview : startPreview}>
+            {previewPlaying ? 'STOP PREVIEW' : 'PREVIEW CHAIN'}
+          </button>
+          <button className="primary-action" disabled={!audioBuffer || status === 'processing'} onClick={handleProcess}>
+            {status === 'processing' ? 'PROCESSING…' : 'PROCESS / REAMP'}
+          </button>
+          <button className="secondary-action" disabled={!wetBuffer} onClick={handleDownload}>
+            DOWNLOAD WAV
+          </button>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function KnobDisplay({ label, value, suffix = '' }) {
+  const normalized = Math.max(-12, Math.min(12, Number(value) || 0));
+  const rotation = -135 + ((normalized + 12) / 24) * 270;
+  return (
+    <div className="knob-display">
+      <div className="knob-shell" style={{ '--rotation': `${rotation}deg` }}>
+        <span />
       </div>
-
-      <div className="panel tone-shape">
-        <h2>Tone shape</h2>
-        <p className="subtitle">
-          Input gain feeds the amp model harder/softer. Bass/Mid/Treble is a 3-band EQ after the amp+cab —
-          not the amp's own tone stack (a NAM capture is a fixed knob setting).
-        </p>
-
-        <ToneSlider
-          label="Input Gain"
-          value={toneParams.inputGainDb}
-          min={-12}
-          max={12}
-          onChange={(v) => handleToneChange('inputGainDb', v)}
-        />
-        <ToneSlider
-          label="Bass"
-          value={toneParams.bassDb}
-          min={-12}
-          max={12}
-          onChange={(v) => handleToneChange('bassDb', v)}
-        />
-        <ToneSlider
-          label="Mid"
-          value={toneParams.midDb}
-          min={-12}
-          max={12}
-          onChange={(v) => handleToneChange('midDb', v)}
-        />
-        <ToneSlider
-          label="Treble"
-          value={toneParams.trebleDb}
-          min={-12}
-          max={12}
-          onChange={(v) => handleToneChange('trebleDb', v)}
-        />
-        <ToneSlider
-          label="Output Gain"
-          value={toneParams.outputGainDb}
-          min={-12}
-          max={12}
-          onChange={(v) => handleToneChange('outputGainDb', v)}
-        />
-
-        <button disabled={!audioBuffer} onClick={previewPlaying ? stopPreview : startPreview}>
-          {previewPlaying ? 'Stop Preview' : 'Preview (dry + EQ)'}
-        </button>
-        <p className="meta">
-          Preview plays your uploaded track live through the Cabinet IR + Input Gain + EQ so you can dial
-          it in by ear — it doesn't include the amp model until that's wired up.
-        </p>
-      </div>
-
-      <ToneFinder />
+      <strong>{label}</strong>
+      <small>{value > 0 ? '+' : ''}{value}{suffix}</small>
     </div>
   );
 }
 
 function ToneSlider({ label, value, min, max, onChange }) {
+  const rotation = -135 + ((value - min) / (max - min)) * 270;
   return (
-    <label className="tone-slider">
-      <span>
-        {label}: {value > 0 ? '+' : ''}
-        {value} dB
+    <label className="tone-knob">
+      <span className="tone-knob-label">{label}</span>
+      <span className="knob-shell interactive" style={{ '--rotation': `${rotation}deg` }}>
+        <span />
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step="0.5"
+          value={value}
+          onChange={(e) => onChange(parseFloat(e.target.value))}
+          aria-label={label}
+        />
       </span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step="0.5"
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-      />
+      <strong>{value > 0 ? '+' : ''}{value} dB</strong>
     </label>
   );
 }

@@ -1,28 +1,32 @@
 // toneShaper.js
 //
 // A NAM capture bakes in one fixed knob setting (whatever the creator
-// captured) - it doesn't expose adjustable amp knobs. So "gain" and
-// "bass/mid/treble" here are NOT the amp's internal tone stack. This is:
+// captured) - it doesn't expose adjustable amp knobs. So everything below
+// is NOT the amp's internal tone stack. This is:
 //   - Input Gain: turns the signal up/down before it hits the amp model,
 //     which does change how hard a NAM model "sees" the signal
-//   - Bass/Mid/Treble: a 3-band EQ applied AFTER the amp (+ cab, once
-//     wired) - functionally an outboard EQ pedal at the end of the chain,
-//     not the amp's own tone controls
+//   - Depth/Bass/Mid/Treble/Presence: a 5-band EQ applied AFTER the amp
+//     (+ cab, once wired) - functionally an outboard EQ pedal at the end
+//     of the chain, not the amp's own tone controls. Depth and Presence
+//     are the two extra bands most real high-gain heads add beyond basic
+//     bass/mid/treble - Depth shapes sub-bass tightness/boom, Presence
+//     shapes top-end sizzle/attack, distinct from Bass and Treble.
 //   - Output Gain: final trim before export
-//
-// Fully independent of the (still unwired) NAM engine - works on any
-// AudioBuffer today.
 
+const DEPTH_HZ = 80;
 const BASS_HZ = 120;
 const MID_HZ = 800;
 const MID_Q = 0.8;
 const TREBLE_HZ = 3000;
+const PRESENCE_HZ = 6500;
 
 export const DEFAULT_TONE_PARAMS = {
   inputGainDb: 0,
+  depthDb: 0,
   bassDb: 0,
   midDb: 0,
   trebleDb: 0,
+  presenceDb: 0,
   outputGainDb: 0,
 };
 
@@ -31,16 +35,21 @@ function dbToGain(db) {
 }
 
 /**
- * Build the shared node chain (input gain -> bass -> mid -> treble ->
- * output gain) on whichever context you pass in (real-time AudioContext
- * for live preview, OfflineAudioContext for a render). Returns the input
- * node to connect your source to, and the output node to connect onward
- * (to `.destination` for preview, left dangling for the caller to route
- * during an offline render).
+ * Build the shared node chain (input gain -> depth -> bass -> mid ->
+ * treble -> presence -> output gain) on whichever context you pass in
+ * (real-time AudioContext for live preview, OfflineAudioContext for a
+ * render). Returns the input node to connect your source to, and the
+ * output node to connect onward (to `.destination` for preview, left
+ * dangling for the caller to route during an offline render).
  */
 export function buildToneChain(ctx, params = DEFAULT_TONE_PARAMS) {
   const inputGain = ctx.createGain();
   inputGain.gain.value = dbToGain(params.inputGainDb);
+
+  const depth = ctx.createBiquadFilter();
+  depth.type = 'lowshelf';
+  depth.frequency.value = DEPTH_HZ;
+  depth.gain.value = params.depthDb;
 
   const bass = ctx.createBiquadFilter();
   bass.type = 'lowshelf';
@@ -58,23 +67,36 @@ export function buildToneChain(ctx, params = DEFAULT_TONE_PARAMS) {
   treble.frequency.value = TREBLE_HZ;
   treble.gain.value = params.trebleDb;
 
+  const presence = ctx.createBiquadFilter();
+  presence.type = 'highshelf';
+  presence.frequency.value = PRESENCE_HZ;
+  presence.gain.value = params.presenceDb;
+
   const outputGain = ctx.createGain();
   outputGain.gain.value = dbToGain(params.outputGainDb);
 
-  inputGain.connect(bass);
+  inputGain.connect(depth);
+  depth.connect(bass);
   bass.connect(mid);
   mid.connect(treble);
-  treble.connect(outputGain);
+  treble.connect(presence);
+  presence.connect(outputGain);
 
-  return { input: inputGain, output: outputGain, nodes: { inputGain, bass, mid, treble, outputGain } };
+  return {
+    input: inputGain,
+    output: outputGain,
+    nodes: { inputGain, depth, bass, mid, treble, presence, outputGain },
+  };
 }
 
 /** Push new parameter values onto an already-built chain (for live tweaking). */
 export function updateToneChain({ nodes }, params) {
   nodes.inputGain.gain.value = dbToGain(params.inputGainDb);
+  nodes.depth.gain.value = params.depthDb;
   nodes.bass.gain.value = params.bassDb;
   nodes.mid.gain.value = params.midDb;
   nodes.treble.gain.value = params.trebleDb;
+  nodes.presence.gain.value = params.presenceDb;
   nodes.outputGain.gain.value = dbToGain(params.outputGainDb);
 }
 
